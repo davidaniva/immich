@@ -30,10 +30,23 @@ export class ImmichFileResponse {
     Object.assign(this, response);
   }
 }
+
+export class ImmichS3Response {
+  public readonly s3Key!: string;
+  public readonly contentType!: string;
+  public readonly cacheControl!: CacheControl;
+  public readonly fileName?: string;
+
+  constructor(response: ImmichS3Response) {
+    Object.assign(this, response);
+  }
+}
+
+export type AssetMediaResponse = ImmichFileResponse | ImmichS3Response;
 type SendFile = Parameters<Response['sendFile']>;
 type SendFileOptions = SendFile[1];
 
-const cacheControlHeaders: Record<CacheControl, string | null> = {
+export const cacheControlHeaders: Record<CacheControl, string | null> = {
   [CacheControl.PrivateWithCache]: 'private, max-age=86400, no-transform',
   [CacheControl.PrivateWithoutCache]: 'private, no-cache, no-transform',
   [CacheControl.None]: null, // falsy value to prevent adding Cache-Control header

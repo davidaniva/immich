@@ -9,6 +9,7 @@ primary_region = 'ord'
   IMMICH_ENV = 'production'
   IMMICH_LOG_LEVEL = 'log'
   IMMICH_MEDIA_LOCATION = '/usr/src/app/upload'
+  IMMICH_URL = 'https://photos.davidescobarjr.com'
   # Database
   DB_HOSTNAME = 'immich-postgres.internal'
   DB_PORT = '5432'
@@ -24,12 +25,6 @@ primary_region = 'ord'
   STORAGE_S3_BUCKET = 'immich-media'
   STORAGE_S3_REGION = 'auto'
   STORAGE_S3_PREFIX = 'users/'
-  # Google OAuth (restricted signup)
-  OAUTH_ENABLED = 'true'
-  OAUTH_ISSUER_URL = 'https://accounts.google.com'
-  OAUTH_SCOPE = 'openid email profile'
-  OAUTH_AUTO_REGISTER = 'false'
-  OAUTH_BUTTON_TEXT = 'Sign in with Google'
 
 [[mounts]]
   source = 'immich_upload'
@@ -48,5 +43,6 @@ primary_region = 'ord'
     soft_limit = 200
 
 [[vm]]
-  memory = '2gb'
+  size = 'performance-2x'
+  memory = '4gb'
   cpus = 2

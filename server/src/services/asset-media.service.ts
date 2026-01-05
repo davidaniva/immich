@@ -29,6 +29,7 @@ import {
   CacheControl,
   JobName,
   Permission,
+  StorageBackend,
   StorageFolder,
 } from 'src/enum';
 import { AuthRequest } from 'src/middleware/auth.guard';
@@ -37,7 +38,7 @@ import { UploadFile, UploadRequest } from 'src/types';
 import { requireUploadAccess } from 'src/utils/access';
 import { asUploadRequest, getAssetFiles, onBeforeLink } from 'src/utils/asset.util';
 import { isAssetChecksumConstraint } from 'src/utils/database';
-import { getFilenameExtension, getFileNameWithoutExtension, ImmichFileResponse } from 'src/utils/file';
+import { AssetMediaResponse, getFilenameExtension, getFileNameWithoutExtension, ImmichFileResponse, ImmichS3Response } from 'src/utils/file';
 import { mimeTypes } from 'src/utils/mime-types';
 import { fromChecksum } from 'src/utils/request';
 
@@ -193,10 +194,19 @@ export class AssetMediaService extends BaseService {
     }
   }
 
-  async downloadOriginal(auth: AuthDto, id: string): Promise<ImmichFileResponse> {
+  async downloadOriginal(auth: AuthDto, id: string): Promise<AssetMediaResponse> {
     await this.requireAccess({ auth, permission: Permission.AssetDownload, ids: [id] });
 
     const asset = await this.findOrFail(id);
+
+    if (asset.storageBackend === StorageBackend.S3 && asset.s3Key) {
+      return new ImmichS3Response({
+        s3Key: asset.s3Key,
+        fileName: asset.originalFileName,
+        contentType: mimeTypes.lookup(asset.originalPath),
+        cacheControl: CacheControl.PrivateWithCache,
+      });
+    }
 
     return new ImmichFileResponse({
       path: asset.originalPath,
@@ -210,16 +220,16 @@ export class AssetMediaService extends BaseService {
     auth: AuthDto,
     id: string,
     dto: AssetMediaOptionsDto,
-  ): Promise<ImmichFileResponse | AssetMediaRedirectResponse> {
+  ): Promise<AssetMediaResponse | AssetMediaRedirectResponse> {
     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [id] });
 
     const asset = await this.findOrFail(id);
     const size = dto.size ?? AssetMediaSize.THUMBNAIL;
 
     const { thumbnailFile, previewFile, fullsizeFile } = getAssetFiles(asset.files ?? []);
-    let filepath = previewFile?.path;
+    let selectedFile = previewFile;
     if (size === AssetMediaSize.THUMBNAIL && thumbnailFile) {
-      filepath = thumbnailFile.path;
+      selectedFile = thumbnailFile;
     } else if (size === AssetMediaSize.FULLSIZE) {
       if (mimeTypes.isWebSupportedImage(asset.originalPath)) {
         // use original file for web supported images
@@ -230,25 +240,36 @@ export class AssetMediaService extends BaseService {
         // e.g. disabled or not yet (re)generated
         return { targetSize: AssetMediaSize.PREVIEW };
       }
-      filepath = fullsizeFile.path;
+      selectedFile = fullsizeFile;
     }
 
-    if (!filepath) {
+    if (!selectedFile?.path) {
       throw new NotFoundException('Asset media not found');
     }
+
     let fileName = getFileNameWithoutExtension(asset.originalFileName);
     fileName += `_${size}`;
-    fileName += getFilenameExtension(filepath);
+    fileName += getFilenameExtension(selectedFile.path);
+
+    // Check if the file is stored in S3
+    if (selectedFile.storageBackend === StorageBackend.S3 && selectedFile.s3Key) {
+      return new ImmichS3Response({
+        s3Key: selectedFile.s3Key,
+        fileName,
+        contentType: mimeTypes.lookup(selectedFile.path),
+        cacheControl: CacheControl.PrivateWithCache,
+      });
+    }
 
     return new ImmichFileResponse({
       fileName,
-      path: filepath,
-      contentType: mimeTypes.lookup(filepath),
+      path: selectedFile.path,
+      contentType: mimeTypes.lookup(selectedFile.path),
       cacheControl: CacheControl.PrivateWithCache,
     });
   }
 
-  async playbackVideo(auth: AuthDto, id: string): Promise<ImmichFileResponse> {
+  async playbackVideo(auth: AuthDto, id: string): Promise<AssetMediaResponse> {
     await this.requireAccess({ auth, permission: Permission.AssetView, ids: [id] });
 
     const asset = await this.findOrFail(id);
@@ -257,7 +278,19 @@ export class AssetMediaService extends BaseService {
       throw new BadRequestException('Asset is not a video');
     }
 
+    // Use encoded video if available, otherwise original
     const filepath = asset.encodedVideoPath || asset.originalPath;
+    const useEncodedVideo = !!asset.encodedVideoPath;
+
+    // Check S3 storage - for encoded video, check encodedVideo backend; for original, check asset backend
+    // Note: encodedVideoPath doesn't have separate S3 tracking yet, so we only check original for now
+    if (!useEncodedVideo && asset.storageBackend === StorageBackend.S3 && asset.s3Key) {
+      return new ImmichS3Response({
+        s3Key: asset.s3Key,
+        contentType: mimeTypes.lookup(filepath),
+        cacheControl: CacheControl.PrivateWithCache,
+      });
+    }
 
     return new ImmichFileResponse({
       path: filepath,

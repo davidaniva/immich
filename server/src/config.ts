@@ -7,6 +7,7 @@ import {
   LogLevel,
   OAuthTokenEndpointAuthMethod,
   QueueName,
+  S3DeliveryMethod,
   StorageBackend,
   ToneMapping,
   TranscodeHardwareAcceleration,
@@ -135,6 +136,8 @@ export interface SystemConfig {
       secretAccessKey: string;
       prefix: string;
       forcePathStyle: boolean;
+      delivery: S3DeliveryMethod;
+      presignedUrlExpiry: number;
     };
     locations: {
       originals: StorageBackend;
@@ -349,6 +352,8 @@ export const defaults = Object.freeze<SystemConfig>({
       secretAccessKey: process.env.STORAGE_S3_SECRET_ACCESS_KEY || '',
       prefix: process.env.STORAGE_S3_PREFIX || 'users/',
       forcePathStyle: true,
+      delivery: S3DeliveryMethod.Redirect,
+      presignedUrlExpiry: 3600,
     },
     locations: {
       originals: StorageBackend.Local,

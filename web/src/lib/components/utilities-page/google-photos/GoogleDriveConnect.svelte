@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { googlePhotosImportStore, type GoogleDriveFile } from '$lib/stores/google-photos-import.store';
   import { Button, Checkbox } from '@immich/ui';
   import byteSize from 'byte-size';
@@ -10,26 +11,81 @@
 
   let { onConnect, onDisconnect }: Props = $props();
 
+  let isCheckingStatus = $state(true);
   let isConnecting = $state(false);
   let isLoadingFiles = $state(false);
+  let connectionError = $state<string | null>(null);
+  let lastRefresh = $state<Date | null>(null);
+  let nextRefreshIn = $state(60);
+  let refreshInterval: ReturnType<typeof setInterval> | null = null;
+  let countdownInterval: ReturnType<typeof setInterval> | null = null;
 
-  const store = $derived.by(() => {
-    let value: typeof $googlePhotosImportStore;
-    googlePhotosImportStore.subscribe((v) => (value = v))();
-    return value!;
+  let storeValue = $state<typeof $googlePhotosImportStore>($googlePhotosImportStore);
+
+  $effect(() => {
+    const unsubscribe = googlePhotosImportStore.subscribe((v) => {
+      storeValue = v;
+    });
+    return unsubscribe;
   });
 
-  // Filter for Takeout ZIP files
+  // Auto-refresh every 60 seconds when connected but no files found
+  $effect(() => {
+    if (storeValue.isGoogleDriveConnected && takeoutFiles.length === 0 && !isLoadingFiles) {
+      // Start auto-refresh
+      refreshInterval = setInterval(async () => {
+        await loadDriveFiles();
+      }, 60000);
+
+      // Countdown timer
+      nextRefreshIn = 60;
+      countdownInterval = setInterval(() => {
+        nextRefreshIn = Math.max(0, nextRefreshIn - 1);
+      }, 1000);
+
+      return () => {
+        if (refreshInterval) clearInterval(refreshInterval);
+        if (countdownInterval) clearInterval(countdownInterval);
+      };
+    } else {
+      // Clear intervals when files found or disconnected
+      if (refreshInterval) clearInterval(refreshInterval);
+      if (countdownInterval) clearInterval(countdownInterval);
+    }
+  });
+
+  // Check connection status on mount
+  onMount(async () => {
+    try {
+      const response = await fetch('/api/google-photos/google-drive/status');
+      if (response.ok) {
+        const { connected } = await response.json();
+        if (connected) {
+          googlePhotosImportStore.setGoogleDriveConnected(true);
+          await loadDriveFiles();
+        }
+      }
+    } catch (error) {
+      console.error('Failed to check connection status:', error);
+    } finally {
+      isCheckingStatus = false;
+    }
+  });
+
+  // Filter for Takeout ZIP files - must start with "takeout" and be a zip
   const takeoutFiles = $derived(
-    store.driveFiles.filter(
+    storeValue.driveFiles.filter(
       (f) =>
-        f.name.toLowerCase().startsWith('takeout-') &&
-        (f.name.toLowerCase().endsWith('.zip') || f.mimeType === 'application/zip')
+        f.name.toLowerCase().startsWith('takeout') &&
+        (f.name.toLowerCase().endsWith('.zip') ||
+          f.mimeType === 'application/zip' ||
+          f.mimeType === 'application/x-zip-compressed')
     )
   );
 
   async function connectGoogleDrive() {
     isConnecting = true;
+    connectionError = null;
 
     try {
       // Get the OAuth URL from the server
@@ -38,19 +94,27 @@
       });
 
       if (!response.ok) {
-        const error = await response.text();
-        throw new Error(error || 'Failed to connect to Google Drive');
+        const errorText = await response.text();
+        // Try to parse as JSON error message
+        try {
+          const errorJson = JSON.parse(errorText);
+          throw new Error(errorJson.message || errorText);
+        } catch {
+          throw new Error(errorText || 'Failed to connect to Google Drive');
+        }
       }
 
-      const { authUrl } = await response.json();
+      const data = await response.json();
+
+      if (!data.authUrl) {
+        throw new Error('No authorization URL received from server');
+      }
 
       // Redirect to Google OAuth
-      window.location.href = authUrl;
+      window.location.href = data.authUrl;
     } catch (error) {
       console.error('Failed to connect:', error);
-      googlePhotosImportStore.setError(
-        error instanceof Error ? error.message : 'Failed to connect to Google Drive. Please try again.'
-      );
+      connectionError = error instanceof Error ? error.message : 'Failed to connect to Google Drive. Please try again.';
       isConnecting = false;
     }
   }
@@ -78,8 +142,11 @@
         throw new Error('Failed to load files');
       }
 
-      const files: GoogleDriveFile[] = await response.json();
+      const data = await response.json();
+      const files: GoogleDriveFile[] = data.files || [];
       googlePhotosImportStore.setDriveFiles(files);
+      lastRefresh = new Date();
+      nextRefreshIn = 60; // Reset countdown
     } catch (error) {
       console.error('Failed to load files:', error);
       googlePhotosImportStore.setError('Failed to load files from Google Drive');
@@ -124,7 +191,7 @@
     <div class="text">
       <h3>Google Drive Import</h3>
       <p>
-        {#if store.isGoogleDriveConnected}
+        {#if storeValue.isGoogleDriveConnected}
           Auto-import Takeout files from your Google Drive
         {:else}
           Connect to import Takeout files directly from Drive
@@ -133,11 +200,27 @@
     </div>
   </div>
 
-  {#if !store.isGoogleDriveConnected}
+  {#if isCheckingStatus}
+    <div class="checking-status">
+      <span class="spinner"></span>
+      <span>Checking connection status...</span>
+    </div>
+  {:else if !storeValue.isGoogleDriveConnected}
     <div class="connect-section">
       <p class="connect-description">
         If you selected "Add to Drive" in Google Takeout, your export files will appear here automatically.
       </p>
+
+      {#if connectionError}
+        <div class="error-message">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor">
+            <path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zm-8-5a.75.75 0 01.75.75v4.5a.75.75 0 01-1.5 0v-4.5A.75.75 0 0110 5zm0 10a1 1 0 100-2 1 1 0 000 2z" clip-rule="evenodd" />
+          </svg>
+          <span>{connectionError}</span>
+          <button onclick={() => connectionError = null}>Dismiss</button>
+        </div>
+      {/if}
+
       <Button onclick={connectGoogleDrive} color="primary" disabled={isConnecting}>
         {#if isConnecting}
           <span class="spinner"></span>
@@ -163,19 +246,40 @@
       </div>
 
       {#if isLoadingFiles}
-        <div class="loading">
-          <span class="spinner"></span>
-          Searching for Takeout files...
+        <div class="scanning-drive">
+          <div class="scanning-animation">
+            <span class="spinner large"></span>
+          </div>
+          <div class="scanning-text">
+            <h4>Scanning Google Drive</h4>
+            <p>Looking for Google Takeout files...</p>
+          </div>
         </div>
       {:else if takeoutFiles.length === 0}
         <div class="no-files">
-          <p>No Takeout files found in your Google Drive.</p>
-          <p class="hint">Make sure you selected "Add to Drive" when creating your export in Google Takeout.</p>
-          <Button onclick={loadDriveFiles} size="sm">
+          <div class="waiting-icon">
+            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke-width="1.5" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+          </div>
+          <h4>Waiting for Takeout export...</h4>
+          <p>No Takeout files found in your Google Drive yet.</p>
+          <p class="hint">
+            Google Takeout exports can take several hours (or even days for large libraries).
+            We'll automatically check every minute for new files.
+          </p>
+          <div class="auto-refresh-status">
+            <span class="refresh-indicator"></span>
+            <span>Auto-refreshing in {nextRefreshIn}s</span>
+            {#if lastRefresh}
+              <span class="last-check">Last checked: {lastRefresh.toLocaleTimeString()}</span>
+            {/if}
+          </div>
+          <Button onclick={loadDriveFiles} size="sm" disabled={isLoadingFiles}>
             <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" class="w-4 h-4 mr-1">
               <path fill-rule="evenodd" d="M15.312 11.424a5.5 5.5 0 01-9.201 2.466l-.312-.311h2.433a.75.75 0 000-1.5H3.989a.75.75 0 00-.75.75v4.242a.75.75 0 001.5 0v-2.43l.31.31a7 7 0 0011.712-3.138.75.75 0 00-1.449-.39zm1.23-3.723a.75.75 0 00.219-.53V2.929a.75.75 0 00-1.5 0V5.36l-.31-.31A7 7 0 003.239 8.188a.75.75 0 101.448.389A5.5 5.5 0 0113.89 6.11l.311.31h-2.432a.75.75 0 000 1.5h4.243a.75.75 0 00.53-.219z" clip-rule="evenodd" />
             </svg>
-            Refresh
+            Check Now
           </Button>
         </div>
       {:else}
@@ -194,7 +298,7 @@
               <li>
                 <label class="file-row">
                   <Checkbox
-                    checked={store.selectedDriveFiles.includes(file.id)}
+                    checked={storeValue.selectedDriveFiles.includes(file.id)}
                     onchange={() => toggleFile(file.id)}
                   />
                   <div class="file-info">
@@ -208,12 +312,12 @@
             {/each}
           </ul>
 
-          {#if store.selectedDriveFiles.length > 0}
+          {#if storeValue.selectedDriveFiles.length > 0}
             <div class="selection-summary">
-              {store.selectedDriveFiles.length} file{store.selectedDriveFiles.length === 1 ? '' : 's'} selected
+              {storeValue.selectedDriveFiles.length} file{storeValue.selectedDriveFiles.length === 1 ? '' : 's'} selected
               ({byteSize(
                 takeoutFiles
-                  .filter((f) => store.selectedDriveFiles.includes(f.id))
+                  .filter((f) => storeValue.selectedDriveFiles.includes(f.id))
                   .reduce((sum, f) => sum + f.size, 0)
               ).toString()})
             </div>
@@ -226,10 +330,15 @@
 
 <style>
   .drive-connect-container {
-    background: var(--immich-bg);
-    border: 1px solid var(--immich-border);
+    background: rgb(var(--immich-bg));
+    border: 1px solid rgb(var(--immich-fg) / 0.1);
     border-radius: 0.75rem;
     padding: 1.5rem;
+  }
+
+  :global(.dark) .drive-connect-container {
+    background: rgb(var(--immich-dark-bg));
+    border-color: rgb(var(--immich-dark-fg) / 0.1);
   }
 
   .header {
@@ -246,9 +355,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
-    background: white;
-    border: 1px solid #e0e0e0;
+    background: rgb(var(--immich-bg));
+    border: 1px solid rgb(var(--immich-fg) / 0.15);
     border-radius: 0.5rem;
+  }
+
+  :global(.dark) .icon {
+    background: rgb(var(--immich-dark-gray));
+    border-color: rgb(var(--immich-dark-fg) / 0.15);
   }
 
   .drive-logo {
@@ -260,13 +374,34 @@
     margin: 0 0 0.25rem 0;
     font-size: 1.125rem;
     font-weight: 600;
-    color: var(--immich-fg);
+    color: rgb(var(--immich-fg));
+  }
+
+  :global(.dark) .text h3 {
+    color: rgb(var(--immich-dark-fg));
   }
 
   .text p {
     margin: 0;
-    color: var(--immich-fg-muted);
+    color: rgb(var(--immich-fg) / 0.7);
     font-size: 0.875rem;
+  }
+
+  :global(.dark) .text p {
+    color: rgb(var(--immich-dark-fg) / 0.7);
+  }
+
+  .checking-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.75rem;
+    padding: 2rem 1rem;
+    color: rgb(var(--immich-fg) / 0.7);
+  }
+
+  :global(.dark) .checking-status {
+    color: rgb(var(--immich-dark-fg) / 0.7);
   }
 
   .connect-section {
@@ -276,8 +411,64 @@
 
   .connect-description {
     margin: 0 0 1.25rem 0;
-    color: var(--immich-fg-muted);
+    color: rgb(var(--immich-fg) / 0.7);
     font-size: 0.875rem;
+  }
+
+  :global(.dark) .connect-description {
+    color: rgb(var(--immich-dark-fg) / 0.7);
+  }
+
+  .error-message {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    margin-bottom: 1.25rem;
+    padding: 0.875rem 1rem;
+    background: #fef2f2;
+    border: 1px solid #dc2626;
+    border-radius: 0.5rem;
+    color: #dc2626;
+    font-size: 0.875rem;
+    text-align: left;
+  }
+
+  :global(.dark) .error-message {
+    background: rgba(220, 38, 38, 0.1);
+    border-color: #f87171;
+    color: #f87171;
+  }
+
+  .error-message svg {
+    flex-shrink: 0;
+    width: 1.25rem;
+    height: 1.25rem;
+    margin-top: 0.125rem;
+  }
+
+  .error-message span {
+    flex: 1;
+  }
+
+  .error-message button {
+    flex-shrink: 0;
+    padding: 0.25rem 0.5rem;
+    background: transparent;
+    border: 1px solid currentColor;
+    border-radius: 0.25rem;
+    color: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+  }
+
+  .error-message button:hover {
+    background: #dc2626;
+    color: white;
+  }
+
+  :global(.dark) .error-message button:hover {
+    background: #f87171;
+    color: black;
   }
 
   .connected-section {
@@ -289,18 +480,26 @@
     align-items: center;
     justify-content: space-between;
     padding: 0.75rem 1rem;
-    background: var(--immich-success-bg, #ecfdf5);
+    background: #ecfdf5;
     border-radius: 0.5rem;
     margin-bottom: 1rem;
+  }
+
+  :global(.dark) .connected-status {
+    background: rgba(16, 185, 129, 0.1);
   }
 
   .status-badge {
     display: flex;
     align-items: center;
     gap: 0.5rem;
-    color: var(--immich-success, #059669);
+    color: #059669;
     font-weight: 500;
     font-size: 0.875rem;
+  }
+
+  :global(.dark) .status-badge {
+    color: #34d399;
   }
 
   .status-badge svg {
@@ -311,31 +510,87 @@
   .disconnect-btn {
     padding: 0.375rem 0.75rem;
     background: transparent;
-    border: 1px solid var(--immich-border);
+    border: 1px solid rgb(var(--immich-fg) / 0.2);
     border-radius: 0.375rem;
     font-size: 0.8125rem;
-    color: var(--immich-fg-muted);
+    color: rgb(var(--immich-fg) / 0.7);
     cursor: pointer;
     transition: all 0.15s ease;
   }
 
-  .disconnect-btn:hover {
-    border-color: var(--immich-danger);
-    color: var(--immich-danger);
+  :global(.dark) .disconnect-btn {
+    border-color: rgb(var(--immich-dark-fg) / 0.2);
+    color: rgb(var(--immich-dark-fg) / 0.7);
   }
 
-  .loading,
+  .disconnect-btn:hover {
+    border-color: #dc2626;
+    color: #dc2626;
+  }
+
+  :global(.dark) .disconnect-btn:hover {
+    border-color: #f87171;
+    color: #f87171;
+  }
+
+  .scanning-drive {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1rem;
+    padding: 2.5rem 1rem;
+    background: rgb(var(--immich-primary) / 0.05);
+    border-radius: 0.5rem;
+    margin-top: 1rem;
+  }
+
+  :global(.dark) .scanning-drive {
+    background: rgb(var(--immich-dark-primary) / 0.05);
+  }
+
+  .scanning-animation {
+    position: relative;
+  }
+
+  .scanning-text {
+    text-align: center;
+  }
+
+  .scanning-text h4 {
+    margin: 0 0 0.25rem 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: rgb(var(--immich-fg));
+  }
+
+  :global(.dark) .scanning-text h4 {
+    color: rgb(var(--immich-dark-fg));
+  }
+
+  .scanning-text p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: rgb(var(--immich-fg) / 0.7);
+  }
+
+  :global(.dark) .scanning-text p {
+    color: rgb(var(--immich-dark-fg) / 0.7);
+  }
+
+  .spinner.large {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-width: 3px;
+  }
+
   .no-files {
     text-align: center;
     padding: 2rem 1rem;
-    color: var(--immich-fg-muted);
+    color: rgb(var(--immich-fg) / 0.7);
   }
 
-  .loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0.75rem;
+  :global(.dark) .no-files {
+    color: rgb(var(--immich-dark-fg) / 0.7);
   }
 
   .no-files p {
@@ -347,13 +602,95 @@
     margin-bottom: 1rem;
   }
 
+  .no-files h4 {
+    margin: 0.75rem 0 0.5rem 0;
+    font-size: 1rem;
+    font-weight: 600;
+    color: rgb(var(--immich-fg));
+  }
+
+  :global(.dark) .no-files h4 {
+    color: rgb(var(--immich-dark-fg));
+  }
+
+  .waiting-icon {
+    display: flex;
+    justify-content: center;
+    margin-bottom: 0.5rem;
+  }
+
+  .waiting-icon svg {
+    width: 3rem;
+    height: 3rem;
+    color: rgb(var(--immich-primary));
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  :global(.dark) .waiting-icon svg {
+    color: rgb(var(--immich-dark-primary));
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  .auto-refresh-status {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 1rem 0;
+    padding: 0.75rem 1rem;
+    background: rgb(var(--immich-primary) / 0.1);
+    border: 1px solid rgb(var(--immich-primary) / 0.2);
+    border-radius: 0.5rem;
+    font-size: 0.875rem;
+    color: rgb(var(--immich-fg));
+  }
+
+  :global(.dark) .auto-refresh-status {
+    background: rgb(var(--immich-dark-primary) / 0.1);
+    border-color: rgb(var(--immich-dark-primary) / 0.2);
+  }
+
+  .refresh-indicator {
+    width: 0.5rem;
+    height: 0.5rem;
+    background: rgb(var(--immich-primary));
+    border-radius: 50%;
+    animation: blink 1s ease-in-out infinite;
+  }
+
+  :global(.dark) .refresh-indicator {
+    background: rgb(var(--immich-dark-primary));
+  }
+
+  @keyframes blink {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  .last-check {
+    margin-left: 0.5rem;
+    padding-left: 0.5rem;
+    border-left: 1px solid rgb(var(--immich-fg) / 0.3);
+    opacity: 0.7;
+  }
+
   .spinner {
     width: 1.25rem;
     height: 1.25rem;
-    border: 2px solid var(--immich-border);
-    border-top-color: var(--immich-primary);
+    border: 2px solid rgb(var(--immich-fg) / 0.2);
+    border-top-color: rgb(var(--immich-primary));
     border-radius: 50%;
     animation: spin 0.8s linear infinite;
+  }
+
+  :global(.dark) .spinner {
+    border-color: rgb(var(--immich-dark-fg) / 0.2);
+    border-top-color: rgb(var(--immich-dark-primary));
   }
 
   @keyframes spin {
@@ -377,7 +714,11 @@
     margin: 0;
     font-size: 0.875rem;
     font-weight: 600;
-    color: var(--immich-fg);
+    color: rgb(var(--immich-fg));
+  }
+
+  :global(.dark) .file-list-header h4 {
+    color: rgb(var(--immich-dark-fg));
   }
 
   .selection-actions {
@@ -390,10 +731,14 @@
   .link-btn {
     background: none;
     border: none;
-    color: var(--immich-primary);
+    color: rgb(var(--immich-primary));
     cursor: pointer;
     padding: 0;
     font-size: inherit;
+  }
+
+  :global(.dark) .link-btn {
+    color: rgb(var(--immich-dark-primary));
   }
 
   .link-btn:hover {
@@ -401,7 +746,11 @@
   }
 
   .separator {
-    color: var(--immich-border);
+    color: rgb(var(--immich-fg) / 0.3);
+  }
+
+  :global(.dark) .separator {
+    color: rgb(var(--immich-dark-fg) / 0.3);
   }
 
   .file-list ul {
@@ -410,12 +759,20 @@
     list-style: none;
     max-height: 300px;
     overflow-y: auto;
-    border: 1px solid var(--immich-border);
+    border: 1px solid rgb(var(--immich-fg) / 0.1);
     border-radius: 0.5rem;
   }
 
+  :global(.dark) .file-list ul {
+    border-color: rgb(var(--immich-dark-fg) / 0.1);
+  }
+
   .file-list li {
-    border-bottom: 1px solid var(--immich-border);
+    border-bottom: 1px solid rgb(var(--immich-fg) / 0.1);
+  }
+
+  :global(.dark) .file-list li {
+    border-color: rgb(var(--immich-dark-fg) / 0.1);
   }
 
   .file-list li:last-child {
@@ -432,7 +789,11 @@
   }
 
   .file-row:hover {
-    background: var(--immich-bg-hover);
+    background: rgb(var(--immich-fg) / 0.05);
+  }
+
+  :global(.dark) .file-row:hover {
+    background: rgb(var(--immich-dark-fg) / 0.05);
   }
 
   .file-info {
@@ -444,24 +805,37 @@
 
   .file-name {
     font-size: 0.875rem;
-    color: var(--immich-fg);
+    color: rgb(var(--immich-fg));
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
   }
 
+  :global(.dark) .file-name {
+    color: rgb(var(--immich-dark-fg));
+  }
+
   .file-meta {
     font-size: 0.75rem;
-    color: var(--immich-fg-muted);
+    color: rgb(var(--immich-fg) / 0.6);
+  }
+
+  :global(.dark) .file-meta {
+    color: rgb(var(--immich-dark-fg) / 0.6);
   }
 
   .selection-summary {
     margin-top: 0.75rem;
     padding: 0.5rem 0.75rem;
-    background: var(--immich-primary-bg, #eff6ff);
+    background: rgb(var(--immich-primary) / 0.1);
     border-radius: 0.375rem;
     font-size: 0.8125rem;
-    color: var(--immich-primary);
+    color: rgb(var(--immich-fg));
     text-align: center;
+  }
+
+  :global(.dark) .selection-summary {
+    background: rgb(var(--immich-dark-primary) / 0.1);
+    color: rgb(var(--immich-dark-fg));
   }
 </style>

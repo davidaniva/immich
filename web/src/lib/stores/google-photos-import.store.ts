@@ -2,6 +2,8 @@ import { writable, derived } from 'svelte/store';
 
 export type ImportStep = 'connect' | 'export' | 'upload' | 'processing' | 'complete';
 export type ImportMethod = 'drive' | 'upload' | null;
+export type ImportPhase = 'downloading' | 'processing' | 'complete' | 'failed';
+export type ActivityEventType = 'info' | 'success' | 'error' | 'download' | 'upload' | 'album';
 
 export interface GoogleDriveFile {
   id: string;
@@ -11,15 +13,23 @@ export interface GoogleDriveFile {
   mimeType: string;
 }
 
+export interface ActivityEvent {
+  timestamp: string;
+  type: ActivityEventType;
+  message: string;
+}
+
 export interface ImportProgress {
-  phase: 'extracting' | 'parsing' | 'uploading' | 'complete';
+  phase: ImportPhase;
   current: number;
   total: number;
   currentFile?: string;
   albumsFound: number;
-  photosMatched: number;
-  photosMissingMetadata: number;
+  photosImported: number;
+  bytesDownloaded?: number;
+  totalBytes?: number;
   errors: string[];
+  events: ActivityEvent[];
 }
 
 export interface GooglePhotosImportState {

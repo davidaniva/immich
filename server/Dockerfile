@@ -74,6 +74,21 @@ RUN --mount=type=cache,id=pnpm-plugins,target=/buildcache/pnpm-store \
   --mount=type=cache,id=mise-tools-${TARGETPLATFORM},target=/buildcache/mise \
   cd plugins && mise run build
 
+FROM alpine:3.20 AS immich-go
+
+ARG TARGETPLATFORM
+ARG IMMICH_GO_VERSION=v0.31.0
+
+RUN apk add --no-cache curl && \
+    case "${TARGETPLATFORM}" in \
+      "linux/amd64") ARCH="x86_64" ;; \
+      "linux/arm64") ARCH="arm64" ;; \
+      *) echo "Unsupported platform: ${TARGETPLATFORM}" && exit 1 ;; \
+    esac && \
+    curl -fsSL "https://github.com/simulot/immich-go/releases/download/${IMMICH_GO_VERSION}/immich-go_Linux_${ARCH}.tar.gz" | \
+    tar -xz -C /usr/local/bin immich-go && \
+    chmod +x /usr/local/bin/immich-go
+
 FROM ghcr.io/immich-app/base-server-prod:202511261514@sha256:c04c1c38dd90e53455b180aedf93c3c63474c8d20ffe2c6d7a3a61a2181e6d29
 
 WORKDIR /usr/src/app
@@ -86,6 +101,7 @@ COPY --from=web /usr/src/app/web/build /build/www
 COPY --from=cli /output/cli-pruned ./cli
 COPY --from=plugins /usr/src/app/plugins/dist /build/corePlugin/dist
 COPY --from=plugins /usr/src/app/plugins/manifest.json /build/corePlugin/manifest.json
+COPY --from=immich-go /usr/local/bin/immich-go /usr/local/bin/immich-go
 RUN ln -s ../../cli/bin/immich server/bin/immich
 COPY LICENSE /licenses/LICENSE.txt
 COPY LICENSE /LICENSE

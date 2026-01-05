@@ -563,4 +563,9 @@ export interface UserMetadata extends Record<UserMetadataKey, Record<string, any
   [UserMetadataKey.Preferences]: DeepPartial<UserPreferences>;
   [UserMetadataKey.License]: { licenseKey: string; activationKey: string; activatedAt: string };
   [UserMetadataKey.Onboarding]: { isOnboarded: boolean };
+  [UserMetadataKey.GoogleDriveTokens]: {
+    accessToken: string;
+    refreshToken?: string;
+    expiresAt?: string;
+  };
 }

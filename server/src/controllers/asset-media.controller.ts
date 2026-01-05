@@ -34,14 +34,16 @@ import {
   UploadFieldName,
 } from 'src/dtos/asset-media.dto';
 import { AuthDto } from 'src/dtos/auth.dto';
-import { ApiTag, ImmichHeader, Permission, RouteKey } from 'src/enum';
+import { ApiTag, ImmichHeader, Permission, RouteKey, S3DeliveryMethod } from 'src/enum';
 import { AssetUploadInterceptor } from 'src/middleware/asset-upload.interceptor';
 import { Auth, Authenticated, FileResponse } from 'src/middleware/auth.guard';
 import { FileUploadInterceptor, getFiles } from 'src/middleware/file-upload.interceptor';
 import { LoggingRepository } from 'src/repositories/logging.repository';
+import { StorageAdapterFactory } from 'src/repositories/storage/storage-adapter.factory';
 import { AssetMediaService } from 'src/services/asset-media.service';
+import { SystemConfigService } from 'src/services/system-config.service';
 import { UploadFiles } from 'src/types';
-import { ImmichFileResponse, sendFile } from 'src/utils/file';
+import { cacheControlHeaders, ImmichFileResponse, ImmichS3Response, sendFile } from 'src/utils/file';
 import { FileNotEmptyValidator, UUIDParamDto } from 'src/validation';
 
 @ApiTags(ApiTag.Assets)
@@ -50,7 +52,43 @@ export class AssetMediaController {
   constructor(
     private logger: LoggingRepository,
     private service: AssetMediaService,
+    private configService: SystemConfigService,
+    private storageAdapterFactory: StorageAdapterFactory,
   ) {}
+
+  private async handleS3Response(res: Response, s3Response: ImmichS3Response): Promise<void> {
+    const config = await this.configService.getSystemConfig();
+    const s3Config = config.storage.s3;
+
+    const cacheHeader = cacheControlHeaders[s3Response.cacheControl];
+    if (cacheHeader) {
+      res.set('Cache-Control', cacheHeader);
+    }
+
+    if (s3Response.fileName) {
+      res.set('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(s3Response.fileName)}`);
+    }
+
+    if (s3Config.delivery === S3DeliveryMethod.Redirect) {
+      // Generate presigned URL and redirect client to S3
+      const s3Adapter = this.storageAdapterFactory.getS3Adapter(s3Config);
+      const presignedUrl = await s3Adapter.getPresignedDownloadUrl(s3Response.s3Key, {
+        expiresIn: s3Config.presignedUrlExpiry,
+      });
+      res.redirect(presignedUrl);
+    } else {
+      // Proxy mode: stream from S3 through the server
+      const s3Adapter = this.storageAdapterFactory.getS3Adapter(s3Config);
+      const { stream, length, type } = await s3Adapter.readStream(s3Response.s3Key);
+
+      res.set('Content-Type', s3Response.contentType || type || 'application/octet-stream');
+      if (length) {
+        res.set('Content-Length', length.toString());
+      }
+
+      stream.pipe(res);
+    }
+  }
 
   @Post()
   @Authenticated({ permission: Permission.AssetUpload, sharedLink: true })
@@ -97,7 +135,13 @@ export class AssetMediaController {
     @Res() res: Response,
     @Next() next: NextFunction,
   ) {
-    await sendFile(res, next, () => this.service.downloadOriginal(auth, id), this.logger);
+    const response = await this.service.downloadOriginal(auth, id);
+
+    if (response instanceof ImmichS3Response) {
+      return this.handleS3Response(res, response);
+    }
+
+    await sendFile(res, next, () => Promise.resolve(response), this.logger);
   }
 
   @Put(':id/original')
@@ -145,6 +189,8 @@ export class AssetMediaController {
 
     if (viewThumbnailRes instanceof ImmichFileResponse) {
       await sendFile(res, next, () => Promise.resolve(viewThumbnailRes), this.logger);
+    } else if (viewThumbnailRes instanceof ImmichS3Response) {
+      return this.handleS3Response(res, viewThumbnailRes);
     } else {
       // viewThumbnailRes is a AssetMediaRedirectResponse
       // which redirects to the original asset or a specific size to make better use of caching
@@ -181,7 +227,13 @@ export class AssetMediaController {
     @Res() res: Response,
     @Next() next: NextFunction,
   ) {
-    await sendFile(res, next, () => this.service.playbackVideo(auth, id), this.logger);
+    const response = await this.service.playbackVideo(auth, id);
+
+    if (response instanceof ImmichS3Response) {
+      return this.handleS3Response(res, response);
+    }
+
+    await sendFile(res, next, () => Promise.resolve(response), this.logger);
   }
 
   @Post('exist')

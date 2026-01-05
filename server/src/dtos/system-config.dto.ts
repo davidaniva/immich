@@ -24,6 +24,7 @@ import {
   LogLevel,
   OAuthTokenEndpointAuthMethod,
   QueueName,
+  S3DeliveryMethod,
   StorageBackend,
   ToneMapping,
   TranscodeHardwareAcceleration,
@@ -660,6 +661,16 @@ class SystemConfigStorageS3Dto {
 
   @ValidateBoolean()
   forcePathStyle!: boolean;
+
+  @ValidateEnum({ enum: S3DeliveryMethod, name: 'S3DeliveryMethod' })
+  delivery!: S3DeliveryMethod;
+
+  @IsInt()
+  @Min(60)
+  @Max(86400)
+  @Type(() => Number)
+  @ApiProperty({ type: 'integer', description: 'Presigned URL expiry time in seconds (60-86400)' })
+  presignedUrlExpiry!: number;
 }
 
 class SystemConfigStorageLocationsDto {
