@@ -1,32 +1,30 @@
-# Tigris Bucket Snapshot Workflow
+# Tigris Bucket Status Workflow
 #
-# Creates daily snapshots of the Tigris bucket for point-in-time recovery.
-# This is an alternative to the Fly scheduled machine approach.
+# NOTE: Native snapshots are NOT supported by Tigris/Fly CLI.
+# The `fly storage snapshots` command does not exist.
+# See: https://fly.io/docs/flyctl/storage/
+#
+# For backup strategies, consider:
+# - Enable object versioning on the bucket
+# - Use rclone to sync to another bucket
+# - Use aws s3 sync for periodic backups
+#
+# This workflow now just reports bucket status.
 #
 # Required secrets:
 #   FLY_API_TOKEN: Your Fly.io API token
-#
-# Setup:
-# 1. Go to repo Settings > Secrets and variables > Actions
-# 2. Add FLY_API_TOKEN secret
 
-name: Tigris Snapshot
+name: Tigris Bucket Status
 
 on:
   schedule:
-    # Run daily at 3:00 AM UTC (after database backup at 2:00 AM)
+    # Run daily at 3:00 AM UTC
     - cron: '0 3 * * *'
   workflow_dispatch:
-    # Allow manual trigger
-    inputs:
-      snapshot_name:
-        description: 'Custom snapshot name (optional)'
-        required: false
-        type: string
 
 jobs:
-  snapshot:
-    name: Create Tigris Snapshot
+  status:
+    name: Check Tigris Bucket Status
     runs-on: ubuntu-latest
 
     steps:
@@ -49,36 +47,22 @@ jobs:
           curl -L https://fly.io/install.sh | sh
           echo "$HOME/.fly/bin" >> $GITHUB_PATH
 
-      - name: Generate snapshot name
-        id: snapshot-name
-        run: |
-          if [ -n "${{ inputs.snapshot_name }}" ]; then
-            NAME="${{ inputs.snapshot_name }}"
-          else
-            NAME="daily-$(date +%Y%m%d-%H%M%S)"
-          fi
-          echo "name=${NAME}" >> $GITHUB_OUTPUT
-          echo "Snapshot name: ${NAME}"
-
-      - name: Create Tigris snapshot
+      - name: Check bucket status
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
         run: |
-          echo "Creating snapshot: ${{ steps.snapshot-name.outputs.name }}"
-          fly storage snapshots create "${{ steps.bucket.outputs.name }}" \
-            --name "${{ steps.snapshot-name.outputs.name }}"
-
-      - name: List snapshots
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-        run: |
-          echo "Current snapshots:"
-          fly storage snapshots list "${{ steps.bucket.outputs.name }}" || true
+          echo "Checking Tigris bucket status..."
+          fly storage list
+          echo ""
+          echo "Bucket details:"
+          fly storage status "${{ steps.bucket.outputs.name }}" || echo "Could not get bucket status"
 
       - name: Summary
         run: |
-          echo "## Tigris Snapshot Created" >> $GITHUB_STEP_SUMMARY
+          echo "## Tigris Bucket Status" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "- **Bucket**: ${{ steps.bucket.outputs.name }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Snapshot**: ${{ steps.snapshot-name.outputs.name }}" >> $GITHUB_STEP_SUMMARY
           echo "- **Time**: $(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> **Note**: Native snapshots are not supported by Tigris." >> $GITHUB_STEP_SUMMARY
+          echo "> Consider using rclone or aws s3 sync for backups." >> $GITHUB_STEP_SUMMARY
