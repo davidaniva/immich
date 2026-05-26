@@ -74,19 +74,18 @@ export class S3StorageAdapter implements IStorageAdapter {
     // after signing invalidates the signature, so when a distinct public
     // endpoint is configured, use a dedicated client whose endpoint matches
     // the URL clients will actually call.
-    if (config.publicEndpoint && config.publicEndpoint !== config.endpoint) {
-      this.presignClient = new S3Client({
-        endpoint: config.publicEndpoint,
-        region: config.region,
-        credentials: {
-          accessKeyId: config.accessKeyId,
-          secretAccessKey: config.secretAccessKey,
-        },
-        forcePathStyle,
-      });
-    } else {
-      this.presignClient = this.client;
-    }
+    const usePresignClient = !!config.publicEndpoint && config.publicEndpoint !== config.endpoint;
+    this.presignClient = usePresignClient
+      ? new S3Client({
+          endpoint: config.publicEndpoint,
+          region: config.region,
+          credentials: {
+            accessKeyId: config.accessKeyId,
+            secretAccessKey: config.secretAccessKey,
+          },
+          forcePathStyle,
+        })
+      : this.client;
   }
 
   /**
