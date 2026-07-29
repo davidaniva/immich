@@ -289,9 +289,7 @@ describe(DatabaseService.name, () => {
 
         expect(mocks.logger.warn.mock.calls).toEqual(
           expect.arrayContaining([
-            expect.arrayContaining([
-              expect.stringContaining(`Continuing with ${extensionName} ${minVersionInRange}`),
-            ]),
+            expect.arrayContaining([expect.stringContaining(`Continuing with ${extensionName} ${minVersionInRange}`)]),
           ]),
         );
         expect(mocks.logger.fatal).not.toHaveBeenCalled();

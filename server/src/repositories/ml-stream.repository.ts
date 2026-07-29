@@ -244,14 +244,11 @@ export class MlStreamRepository implements OnModuleDestroy {
     for (const [task, stream] of Object.entries(STREAM_KEYS.requests)) {
       try {
         // Use XINFO GROUPS to get consumer group lag (unconsumed messages)
-        const groups = await this.redis.xinfo('GROUPS', stream) as unknown[];
+        const groups = (await this.redis.xinfo('GROUPS', stream)) as unknown[];
         const lag = this.parseConsumerGroupLag(groups, 'ml-workers');
-        if (lag !== null) {
-          pending[task as MlStreamTask] = lag;
-        } else {
-          // Fallback to total stream length if no consumer group
-          pending[task as MlStreamTask] = await this.redis.xlen(stream);
-        }
+        // Fall back to total stream length when there is no consumer group.
+        // `??` keeps a genuine lag of 0 rather than treating it as absent.
+        pending[task as MlStreamTask] = lag ?? (await this.redis.xlen(stream));
       } catch {
         pending[task as MlStreamTask] = 0;
       }
@@ -278,7 +275,7 @@ export class MlStreamRepository implements OnModuleDestroy {
 
     const stream = STREAM_KEYS.requests[task];
     try {
-      const groups = await client.xinfo('GROUPS', stream) as unknown[];
+      const groups = (await client.xinfo('GROUPS', stream)) as unknown[];
       const parsed = this.parseConsumerGroupStats(groups, 'ml-workers');
       if (parsed) {
         return parsed;

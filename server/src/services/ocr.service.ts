@@ -87,7 +87,12 @@ export class OcrService extends BaseService {
     }
 
     // Stream mode with S3: publish S3 URL directly, no local download needed
-    if (machineLearning.streamMode?.enabled && previewFile.storageBackend === 's3' && previewFile.s3Bucket && previewFile.s3Key) {
+    if (
+      machineLearning.streamMode?.enabled &&
+      previewFile.storageBackend === 's3' &&
+      previewFile.s3Bucket &&
+      previewFile.s3Key
+    ) {
       await this.mlStreamRepository.publish({
         correlationId: this.cryptoRepository.randomUUID(),
         assetId: id,
